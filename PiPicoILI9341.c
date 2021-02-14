@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
 
@@ -11,13 +12,26 @@
 #define PIN_RST 14
 #define PIN_LED 25
 
-#define SCREEN_WIDTH 320
-#define SCREEN_HEIGHT 240
+#define SCREEN_WIDTH 240
+#define SCREEN_HEIGHT 320
 #define SCREEN_TOTAL_PIXELS SCREEN_WIDTH * SCREEN_HEIGHT
 #define BUFFER_SIZE SCREEN_TOTAL_PIXELS * 2
 
+
+
 // display buffer of our screen size.
 uint8_t buffer[BUFFER_SIZE];
+
+struct Square
+{
+    int16_t x;
+    int16_t y;
+    int16_t w;
+    int16_t h;
+    int8_t xVelocity;
+    int8_t yVelocity;
+    uint8_t color;
+};
 
 static inline void cs_select() {
     asm volatile("nop \n nop \n nop");
@@ -44,13 +58,24 @@ static inline void dc_deselect() {
 }
 
 static void inline send_byte(uint8_t data)
-{
+{   
+    cs_select();
+    dc_deselect();
     spi_write_blocking(SPI_PORT, &data, 1);
+    cs_deselect();
 }
 
 static void inline send_short(uint16_t data)
 {
+    cs_select();
+    dc_deselect();
+
+    // flip the bytes to little endian.
+    //data = (((data & 0x00FF) << 8) | ((data & 0xFF00) >> 8));
+
     spi_write16_blocking(SPI_PORT, &data, 1);
+
+    cs_deselect();
 }
 
 static void inline send_command(uint8_t command)
@@ -58,11 +83,15 @@ static void inline send_command(uint8_t command)
     // set data/command to command mode (low).
     dc_select();
 
+    cs_select();
+
     // send the command to the display.
     spi_write_blocking(SPI_PORT, &command, 1);
 
     // put the display back into data mode (high).
     dc_deselect();
+
+    cs_deselect();
 }
 
 void init_display() 
@@ -76,7 +105,7 @@ void init_display()
 
     // yes this is garbage, but I wanted to break it all down
     // when I was debugging what my initialization issues were.
-    send_command(0x0F);
+    send_command(0xEF);
     send_byte(0x03);
     send_byte(0x80);
     send_byte(0x02);
@@ -132,8 +161,9 @@ void init_display()
 
     send_command(0xB1);
     send_byte(0x00);
-    send_byte(0x18);
-
+    //send_byte(0x1F);
+    send_byte(10);
+    
     send_command(0xB6);
     send_byte(0x08);
     send_byte(0x82);
@@ -142,7 +172,7 @@ void init_display()
     send_command(0xF2);
     send_byte(0x00);
 
-    send_command(0x27);
+    send_command(0x26);
     send_byte(0x01);
 
     send_command(0xE0);
@@ -184,12 +214,16 @@ void init_display()
     sleep_ms(120);
 
     send_command(0x29);
+
+    sleep_ms(120);
+
+    send_command(0x13);
 }
 
 void init_SPI()
 {
     // set up the SPI interface.
-    spi_init(SPI_PORT, 40000000);
+    spi_init(SPI_PORT, 70000000);
     gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
     gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
     gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
@@ -206,25 +240,58 @@ void init_SPI()
     gpio_put(PIN_RST, 0);
 }
 
-void write_buffer()
+void init_drawing()
 {
     send_command(0x2A);
-    send_short(0x0000);
-    send_short(0xEF00);
+    send_byte(0x00);
+    send_byte(0x00);
+    send_byte(0xEF);
+    send_byte(0x00);
 
     send_command(0x2B);
-    send_short(0x0000);
-    send_short(0x3F01);
+    send_byte(0x00);
+    send_byte(0x00);
+    send_byte(0x01);
+    send_byte(0x3F);
+
+    sleep_ms(10);
 
     send_command(0x2C);
+
+    cs_select();
+    dc_deselect();
+}
+
+inline void write_buffer()
+{
     spi_write_blocking(SPI_PORT, buffer, BUFFER_SIZE);
+}
+
+inline void clear_buffer()
+{
+    for (uint i = 0; i < BUFFER_SIZE; i++)
+    {
+        buffer[i] = 0x00;
+    }
+}
+
+void inline draw_rectangle(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t color)
+{
+    for (int i = y * SCREEN_WIDTH * 2; i < (SCREEN_WIDTH * y * 2) + (h * SCREEN_WIDTH * 2); i+=SCREEN_WIDTH * 2)
+    {
+        for (int j = x * 2; j < (x * 2) + (w * 2); j+=2)
+        {
+            buffer[i+j] = color;
+            buffer[i+j+1] = color;
+        }
+    }    
 }
 
 int main()
 {
     stdio_init_all();
 
-    printf("Starting up...\n");
+    printf("Starting up.\n");
 
     init_SPI();
 
@@ -232,32 +299,79 @@ int main()
 
     init_display();
 
-    printf("Display initialized...\n");
+    printf("Display initialized.\n");
+
+    init_drawing();
+
+    printf("Drawing initialized.\n");
+
+    uint playerCount = 50;
+
+    struct Square player[playerCount];
+
+    for (int i = 0; i < playerCount; i++)
+    {
+        player[i].x = rand() % 209;
+        player[i].y = rand() % 289;
+        player[i].w = 30;
+        player[i].h = 30;
+        player[i].xVelocity = rand() % 4 - 2;
+        player[i].yVelocity = rand() % 4 - 2;
+
+        if (player[i].xVelocity == 0 && player[i].yVelocity == 0)
+        {
+            player[i].xVelocity = 3;
+            player[i].yVelocity = 3;
+        }
+
+        player[i].color = rand() % 255;
+    }    
 
     while(1)
     {
-        for (uint i = 0; i < BUFFER_SIZE; i++)
+        for (int i = 0; i < playerCount; i++)
         {
-            buffer[i] = 0xFF;
+            player[i].x += player[i].xVelocity;
+            player[i].y += player[i].yVelocity;
+            
+            if (player[i].x <= 0)
+            {
+                player[i].x = 0;
+                player[i].xVelocity = -player[i].xVelocity;
+            }
+
+            if (player[i].x >= SCREEN_WIDTH - player[i].w)
+            {
+                player[i].x = SCREEN_WIDTH - player[i].w;
+                player[i].xVelocity = -player[i].xVelocity;
+            }
+
+            if (player[i].y <= 0)
+            {
+                player[i].y = 0;
+                player[i].yVelocity = -player[i].yVelocity;
+            }
+
+            if (player[i].y >= SCREEN_HEIGHT - player[i].h)
+            {
+                player[i].y = SCREEN_HEIGHT - player[i].h;
+                player[i].yVelocity = -player[i].yVelocity;
+            }
+            printf("Player[%i]: (%i, %i) (%i, %i)\n", i, player[i].x, player[i].y, player[i].xVelocity, player[i].yVelocity);
         }
 
-        write_buffer();
+        clear_buffer();
 
-        printf("Screen set to white.\n");
-
-        sleep_ms(1000);
-
-        for (uint i = 0; i < BUFFER_SIZE; i++)
+        for (int i = 0; i < playerCount; i++)
         {
-            buffer[i] = 0x00;
+            draw_rectangle(player[i].x, player[i].y, player[i].w, player[i].h, player[i].color);
         }
 
         write_buffer();
 
         printf("Screen set to black.\n");
-
-        sleep_ms(1000);
     }
+
 
     return 0;
 }
