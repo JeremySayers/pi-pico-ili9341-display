@@ -1,6 +1,6 @@
 # pi-pico-ili9341-display
 A basic driver for interfacing the ili9341 display controller with the Pi Pico utilizing SPI.
 
-Offsets for the drawing must be wrong since I'm getting a single empty line at the top (with the first byte of my buffer being written to the first pixel of the second line).
+Drawing is now fully working with two different modes! With the pico running at it's full SPI clock (62.5Mhz) I'm able to get about 40 FPS. Still investigating if I can overlock the pico AND the spi speed (when I overclock the pico it drops down to 22MHz SPI speed).
 
-Seems to be able to write the full buffer pretty quickly, hoping that I can get 30FPS (should only need the SPI interface to operate at 36.864MHz which seems resonable).
+The other mode is interlaced, which sends the odd lines one frame, and the even the next, and that's doing about 75FPS with very minimal artifacts.
