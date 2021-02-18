@@ -17,10 +17,11 @@
 #define SCREEN_TOTAL_PIXELS SCREEN_WIDTH * SCREEN_HEIGHT
 #define BUFFER_SIZE SCREEN_TOTAL_PIXELS * 2
 
-
-
 // display buffer of our screen size.
 uint8_t buffer[BUFFER_SIZE];
+uint8_t interlacePosition = 0;
+
+uint actualBaudrate = 0;
 
 struct Square
 {
@@ -70,10 +71,12 @@ static void inline send_short(uint16_t data)
     cs_select();
     dc_deselect();
 
-    // flip the bytes to little endian.
-    //data = (((data & 0x00FF) << 8) | ((data & 0xFF00) >> 8));
+    uint8_t shortBuffer[2];
 
-    spi_write16_blocking(SPI_PORT, &data, 1);
+    shortBuffer[0] = (uint8_t) (data >> 8);
+    shortBuffer[1] = (uint8_t) data;
+
+    spi_write_blocking(SPI_PORT, shortBuffer, 2);
 
     cs_deselect();
 }
@@ -161,9 +164,9 @@ void init_display()
 
     send_command(0xB1);
     send_byte(0x00);
-    //send_byte(0x1F);
-    send_byte(10);
-    
+    send_byte(0x1F); // 61 Hz
+    //send_byte(10); // 119 Hz
+
     send_command(0xB6);
     send_byte(0x08);
     send_byte(0x82);
@@ -223,7 +226,10 @@ void init_display()
 void init_SPI()
 {
     // set up the SPI interface.
-    spi_init(SPI_PORT, 70000000);
+    spi_init(SPI_PORT, 62500000);
+    actualBaudrate = spi_set_baudrate(SPI_PORT, 70000000);
+
+    printf("Actual Baudrate: %i", actualBaudrate);
     gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
     gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
     gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
@@ -243,16 +249,12 @@ void init_SPI()
 void init_drawing()
 {
     send_command(0x2A);
-    send_byte(0x00);
-    send_byte(0x00);
-    send_byte(0xEF);
-    send_byte(0x00);
+    send_short(0);
+    send_short(239);
 
     send_command(0x2B);
-    send_byte(0x00);
-    send_byte(0x00);
-    send_byte(0x01);
-    send_byte(0x3F);
+    send_short(0);
+    send_short(319);
 
     sleep_ms(10);
 
@@ -265,6 +267,36 @@ void init_drawing()
 inline void write_buffer()
 {
     spi_write_blocking(SPI_PORT, buffer, BUFFER_SIZE);
+}
+
+void write_buffer_interlaced()
+{
+    send_command(0x2A);
+    send_short(0);
+    send_short(239);
+
+    for (int i = interlacePosition; i < SCREEN_HEIGHT; i+=2)
+    {
+        send_command(0x2B);
+        send_short(i);
+        send_short(i+1);
+
+        send_command(0x2C);
+
+        cs_select();
+        dc_deselect();
+
+        spi_write_blocking(SPI_PORT, &buffer[i * SCREEN_WIDTH * 2], SCREEN_WIDTH * 2);
+    }
+
+    if (interlacePosition == 1) 
+    {
+        interlacePosition = 0;
+    } 
+    else 
+    {
+        interlacePosition = 1;
+    }
 }
 
 inline void clear_buffer()
@@ -285,6 +317,40 @@ void inline draw_rectangle(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8
             buffer[i+j+1] = color;
         }
     }    
+}
+
+void update(struct Square player[], uint playerCount)
+{
+    for (int i = 0; i < playerCount; i++)
+        {
+            player[i].x += player[i].xVelocity;
+            player[i].y += player[i].yVelocity;
+            
+            if (player[i].x <= 0)
+            {
+                player[i].x = 0;
+                player[i].xVelocity = -player[i].xVelocity;
+            }
+
+            if (player[i].x >= SCREEN_WIDTH - player[i].w)
+            {
+                player[i].x = SCREEN_WIDTH - player[i].w;
+                player[i].xVelocity = -player[i].xVelocity;
+            }
+
+            if (player[i].y <= 0)
+            {
+                player[i].y = 0;
+                player[i].yVelocity = -player[i].yVelocity;
+            }
+
+            if (player[i].y >= SCREEN_HEIGHT - player[i].h)
+            {
+                player[i].y = SCREEN_HEIGHT - player[i].h;
+                player[i].yVelocity = -player[i].yVelocity;
+            }
+            //printf("Player[%i]: (%i, %i) (%i, %i)\n", i, player[i].x, player[i].y, player[i].xVelocity, player[i].yVelocity);
+        }
 }
 
 int main()
@@ -328,37 +394,8 @@ int main()
     }    
 
     while(1)
-    {
-        for (int i = 0; i < playerCount; i++)
-        {
-            player[i].x += player[i].xVelocity;
-            player[i].y += player[i].yVelocity;
-            
-            if (player[i].x <= 0)
-            {
-                player[i].x = 0;
-                player[i].xVelocity = -player[i].xVelocity;
-            }
-
-            if (player[i].x >= SCREEN_WIDTH - player[i].w)
-            {
-                player[i].x = SCREEN_WIDTH - player[i].w;
-                player[i].xVelocity = -player[i].xVelocity;
-            }
-
-            if (player[i].y <= 0)
-            {
-                player[i].y = 0;
-                player[i].yVelocity = -player[i].yVelocity;
-            }
-
-            if (player[i].y >= SCREEN_HEIGHT - player[i].h)
-            {
-                player[i].y = SCREEN_HEIGHT - player[i].h;
-                player[i].yVelocity = -player[i].yVelocity;
-            }
-            printf("Player[%i]: (%i, %i) (%i, %i)\n", i, player[i].x, player[i].y, player[i].xVelocity, player[i].yVelocity);
-        }
+    {        
+        update(player, playerCount);
 
         clear_buffer();
 
@@ -367,9 +404,12 @@ int main()
             draw_rectangle(player[i].x, player[i].y, player[i].w, player[i].h, player[i].color);
         }
 
+        uint32_t beforeWriteTime = time_us_32();
         write_buffer();
-
-        printf("Screen set to black.\n");
+        //write_buffer_interlaced();
+        uint32_t afterWriteTime = time_us_32();
+        //printf("\n%ldus\n", afterWriteTime-beforeWriteTime);
+        printf("Actual Buadrate: %i", actualBaudrate);
     }
 
 
